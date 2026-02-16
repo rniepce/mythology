@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Defesa do Pinheiro Mágico</title>
+    <style>
+        /* === CSS: Zerar margens e travar rolagem === */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            /* Prevenir seleção de texto no mobile */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            /* Prevenir highlight de toque no mobile */
+            -webkit-tap-highlight-color: transparent;
+            /* Prevenir callout (menu de contexto) no iOS */
+            -webkit-touch-callout: none;
+        }
+
+        canvas {
+            display: block;
+            touch-action: none;
+            /* Previne gestos do navegador */
+        }
+    </style>
+</head>
+
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // =============================================================
+        // 🎮 DEFESA DO PINHEIRO MÁGICO - Passo 5: Boss Monster
+        // =============================================================
+
+        // --- CANVAS & CONTEXTO ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- RESPONSIVIDADE: Canvas em tela cheia ---
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- CARREGAMENTO DE IMAGENS COM FALLBACK ---
+        let imgArvore = new Image();
+        let imgMonstro = new Image();
+        let arvoreCarregada = false;
+        let monstroCarregado = false;
+
+        imgArvore.onload = function () { arvoreCarregada = true; };
+        imgArvore.onerror = function () {
+            console.warn('⚠️ arvore.png não encontrada. Usando fallback geométrico.');
+            arvoreCarregada = false;
+        };
+
+        imgMonstro.onload = function () { monstroCarregado = true; };
+        imgMonstro.onerror = function () {
+            console.warn('⚠️ monstro.png não encontrada. Usando fallback geométrico.');
+            monstroCarregado = false;
+        };
+
+        imgArvore.src = 'arvore.png';
+        imgMonstro.src = 'monstro.png';
+
+        // Imagem do Boss
+        let imgBoss = new Image();
+        let bossCarregado = false;
+        imgBoss.onload = function () { bossCarregado = true; };
+        imgBoss.onerror = function () {
+            console.warn('⚠️ boss.png não encontrada. Usando fallback geométrico.');
+            bossCarregado = false;
+        };
+        imgBoss.src = 'boss.png';
+
+        // --- CONSTANTES DO JOGO ---
+        const TAMANHO_SPRITE = 64;          // Tamanho das sprites (64x64)
+        const HITBOX_EXTRA = 20;            // Pixels extras na hitbox para facilitar toque
+        const VIDAS_INICIAIS = 3;
+        const PONTOS_POR_MONSTRO = 10;
+        const DRACMAS_PARA_DIFICULDADE = 100; // A cada 100, fica mais difícil
+        const BOSS_DRACMAS_INTERVALO = 200;    // Boss aparece a cada 200 Dracmas
+        const BOSS_HP = 5;                      // Vida do Boss
+        const BOSS_TAMANHO = 128;               // Tamanho do sprite do Boss (2x)
+        const BOSS_PONTOS = 50;                 // Recompensa por derrotar o Boss
+
+        // --- ESTADO DO JOGO ---
+        let dracmas = 0;
+        let vidas = VIDAS_INICIAIS;
+        let monstros = [];
+        let gameOver = false;
+        let highScore = 0;
+        let monstrosDestruidos = 0;        // Estatística para Game Over
+        let bossesDestruidos = 0;          // Número de bosses derrotados
+        let tempoDeJogo = 0;               // Tempo de jogo em segundos
+        let timestampInicio = 0;
+
+        // --- ESTADO DO BOSS ---
+        let boss = null;                   // Objeto do boss (null = sem boss ativo)
+        let proximoBossDracmas = BOSS_DRACMAS_INTERVALO; // Próximo limiar para spawnar boss
+        let bossAviso = { ativo: false, alpha: 0, timer: 0 }; // Aviso visual de boss
+
+        // Carregar High Score do localStorage
+        try {
+            const saved = localStorage.getItem('pinheiro_highscore');
+            if (saved) highScore = parseInt(saved);
+        } catch (e) { }
+
+        // =============================================================
+        // 🔊 PASSO 4: SISTEMA DE ÁUDIO (Web Audio API)
+        // Todos os sons são gerados proceduralmente — sem arquivos!
+        // =============================================================
+        let audioCtx = null;
+        let audioDesbloqueado = false;
+
+        // Criar/desbloquear o contexto de áudio no primeiro toque
+        // (Obrigatório: navegadores bloqueiam áudio até interação do usuário)
+        function desbloquearAudio() {
+            if (audioDesbloqueado) return;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                // Tocar silêncio para desbloquear de vez no iOS
+                const silencio = audioCtx.createBuffer(1, 1, 22050);
+                const fonte = audioCtx.createBufferSource();
+                fonte.buffer = silencio;
+                fonte.connect(audioCtx.destination);
+                fonte.start(0);
+                audioDesbloqueado = true;
+                console.log('🔊 Áudio desbloqueado!');
+            } catch (e) {
+                console.warn('⚠️ Web Audio API não disponível.');
+            }
+        }
+
+        // --- SOM 1: Espada / Slash (ao destruir monstro) ---
+        // Ruído branco filtrado = efeito de "swoosh" de espada
+        function somEspada() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const duracao = 0.15;
+            const taxa = audioCtx.sampleRate;
+            const buffer = audioCtx.createBuffer(1, taxa * duracao, taxa);
+            const dados = buffer.getChannelData(0);
+
+            // Gerar ruído branco com envelope
+            for (let i = 0; i < dados.length; i++) {
+                const envelope = 1 - (i / dados.length); // Fade out linear
+                dados[i] = (Math.random() * 2 - 1) * envelope;
+            }
+
+            const fonte = audioCtx.createBufferSource();
+            fonte.buffer = buffer;
+
+            // Filtro passa-banda para soar como metal/vento
+            const filtro = audioCtx.createBiquadFilter();
+            filtro.type = 'bandpass';
+            filtro.frequency.value = 3000;
+            filtro.Q.value = 0.8;
+
+            // Volume
+            const ganho = audioCtx.createGain();
+            ganho.gain.value = 0.3;
+
+            fonte.connect(filtro);
+            filtro.connect(ganho);
+            ganho.connect(audioCtx.destination);
+            fonte.start();
+        }
+
+        // --- SOM 2: Moeda / Ponto (feedback de +10) ---
+        // Dois tons ascendentes rápidos = "coin collect"
+        function somMoeda() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+
+            // Tom 1 (nota mais baixa)
+            const osc1 = audioCtx.createOscillator();
+            osc1.type = 'square';
+            osc1.frequency.value = 780;
+            const g1 = audioCtx.createGain();
+            g1.gain.setValueAtTime(0.15, tempo);
+            g1.gain.exponentialRampToValueAtTime(0.001, tempo + 0.1);
+            osc1.connect(g1);
+            g1.connect(audioCtx.destination);
+            osc1.start(tempo);
+            osc1.stop(tempo + 0.1);
+
+            // Tom 2 (nota mais alta, com delay)
+            const osc2 = audioCtx.createOscillator();
+            osc2.type = 'square';
+            osc2.frequency.value = 1050;
+            const g2 = audioCtx.createGain();
+            g2.gain.setValueAtTime(0.001, tempo);
+            g2.gain.setValueAtTime(0.15, tempo + 0.07);
+            g2.gain.exponentialRampToValueAtTime(0.001, tempo + 0.18);
+            osc2.connect(g2);
+            g2.connect(audioCtx.destination);
+            osc2.start(tempo + 0.07);
+            osc2.stop(tempo + 0.2);
+        }
+
+        // --- SOM 3: Dano (monstro atingiu o chão) ---
+        // Tom grave baixo + ruído = impacto/thud
+        function somDano() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+            const duracao = 0.3;
+
+            // Tom grave
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(150, tempo);
+            osc.frequency.exponentialRampToValueAtTime(50, tempo + duracao);
+
+            const ganho = audioCtx.createGain();
+            ganho.gain.setValueAtTime(0.4, tempo);
+            ganho.gain.exponentialRampToValueAtTime(0.001, tempo + duracao);
+
+            osc.connect(ganho);
+            ganho.connect(audioCtx.destination);
+            osc.start(tempo);
+            osc.stop(tempo + duracao);
+
+            // Ruído de impacto por cima
+            const taxa = audioCtx.sampleRate;
+            const buf = audioCtx.createBuffer(1, taxa * 0.1, taxa);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < d.length; i++) {
+                d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+            }
+            const ruido = audioCtx.createBufferSource();
+            ruido.buffer = buf;
+            const filtro = audioCtx.createBiquadFilter();
+            filtro.type = 'lowpass';
+            filtro.frequency.value = 800;
+            const gRuido = audioCtx.createGain();
+            gRuido.gain.value = 0.2;
+            ruido.connect(filtro);
+            filtro.connect(gRuido);
+            gRuido.connect(audioCtx.destination);
+            ruido.start(tempo);
+        }
+
+        // --- SOM 4: Game Over (tom triste descendente) ---
+        function somGameOver() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+            const notas = [440, 370, 330, 220]; // Lá, Fá#, Mi, Lá (descendente)
+
+            notas.forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.value = freq;
+
+                const ganho = audioCtx.createGain();
+                const inicio = tempo + i * 0.25;
+                ganho.gain.setValueAtTime(0.2, inicio);
+                ganho.gain.exponentialRampToValueAtTime(0.001, inicio + 0.3);
+
+                osc.connect(ganho);
+                ganho.connect(audioCtx.destination);
+                osc.start(inicio);
+                osc.stop(inicio + 0.35);
+            });
+        }
+
+        // --- SOM 5: Rugido do Boss (aparecimento) ---
+        function somBossRugido() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+            const duracao = 0.6;
+
+            // Tom grave ameacador
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(80, tempo);
+            osc.frequency.linearRampToValueAtTime(60, tempo + duracao);
+
+            const ganho = audioCtx.createGain();
+            ganho.gain.setValueAtTime(0.3, tempo);
+            ganho.gain.exponentialRampToValueAtTime(0.001, tempo + duracao);
+
+            // Distorção leve via waveshaper
+            const distorcao = audioCtx.createWaveShaper();
+            const curva = new Float32Array(44100);
+            for (let i = 0; i < 44100; i++) {
+                const x = (i * 2) / 44100 - 1;
+                curva[i] = (Math.PI + 3) * x / (Math.PI + 3 * Math.abs(x));
+            }
+            distorcao.curve = curva;
+
+            osc.connect(distorcao);
+            distorcao.connect(ganho);
+            ganho.connect(audioCtx.destination);
+            osc.start(tempo);
+            osc.stop(tempo + duracao);
+
+            // Ruído por cima (rugido)
+            const taxa = audioCtx.sampleRate;
+            const buf = audioCtx.createBuffer(1, taxa * 0.3, taxa);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < d.length; i++) {
+                d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) * 0.5;
+            }
+            const ruido = audioCtx.createBufferSource();
+            ruido.buffer = buf;
+            const filtroR = audioCtx.createBiquadFilter();
+            filtroR.type = 'lowpass';
+            filtroR.frequency.value = 500;
+            const gR = audioCtx.createGain();
+            gR.gain.value = 0.15;
+            ruido.connect(filtroR);
+            filtroR.connect(gR);
+            gR.connect(audioCtx.destination);
+            ruido.start(tempo);
+        }
+
+        // --- SOM 6: Boss Derrotado (fanfarra) ---
+        function somBossDerrotado() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+            const notas = [523, 659, 784, 1047]; // Dó, Mi, Sol, Dó (ascendente triunfal)
+
+            notas.forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'square';
+                osc.frequency.value = freq;
+
+                const ganho = audioCtx.createGain();
+                const inicio = tempo + i * 0.12;
+                ganho.gain.setValueAtTime(0.18, inicio);
+                ganho.gain.exponentialRampToValueAtTime(0.001, inicio + 0.2);
+
+                osc.connect(ganho);
+                ganho.connect(audioCtx.destination);
+                osc.start(inicio);
+                osc.stop(inicio + 0.25);
+            });
+        }
+
+        // --- SOM 7: Hit no Boss ---
+        function somBossHit() {
+            if (!audioCtx || !audioDesbloqueado) return;
+            const tempo = audioCtx.currentTime;
+
+            const osc = audioCtx.createOscillator();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(200, tempo);
+            osc.frequency.exponentialRampToValueAtTime(100, tempo + 0.1);
+
+            const ganho = audioCtx.createGain();
+            ganho.gain.setValueAtTime(0.25, tempo);
+            ganho.gain.exponentialRampToValueAtTime(0.001, tempo + 0.15);
+
+            osc.connect(ganho);
+            ganho.connect(audioCtx.destination);
+            osc.start(tempo);
+            osc.stop(tempo + 0.15);
+        }
+
+        // --- DIFICULDADE PROGRESSIVA ---
+        let spawnInterval = 1200;   // Intervalo entre spawns (ms) - começa lento
+        let velocidadeQueda = 2;    // Pixels por frame de queda
+        let nivelDificuldade = 0;
+        let ultimoSpawn = 0;
+
+        function atualizarDificuldade() {
+            const novoNivel = Math.floor(dracmas / DRACMAS_PARA_DIFICULDADE);
+            if (novoNivel > nivelDificuldade) {
+                nivelDificuldade = novoNivel;
+                // Diminui intervalo de spawn (mínimo 300ms)
+                spawnInterval = Math.max(300, 1200 - (nivelDificuldade * 100));
+                // Aumenta velocidade de queda (máximo 8)
+                velocidadeQueda = Math.min(8, 2 + (nivelDificuldade * 0.5));
+            }
+        }
+
+        // =============================================================
+        // ✨ PASSO 3: SISTEMA DE EFEITOS VISUAIS
+        // =============================================================
+
+        // --- TEXTOS FLUTUANTES (+10) ---
+        let textosFlutuantes = [];
+
+        function criarTextoFlutuante(x, y, texto, cor) {
+            textosFlutuantes.push({
+                x: x,
+                y: y,
+                texto: texto,
+                cor: cor || '#FFD700',
+                alpha: 1.0,
+                velocidade: -2.5,   // Sobe
+                escala: 1.2,        // Começa um pouco maior
+                vida: 60            // Duração em frames (~1 segundo)
+            });
+        }
+
+        function atualizarTextosFlutuantes() {
+            for (let i = textosFlutuantes.length - 1; i >= 0; i--) {
+                const t = textosFlutuantes[i];
+                t.y += t.velocidade;
+                t.vida--;
+                t.alpha = Math.max(0, t.vida / 40); // Fadeout gradual
+                t.escala = Math.max(0.8, t.escala - 0.008); // Encolhe suavemente
+
+                if (t.vida <= 0) {
+                    textosFlutuantes.splice(i, 1);
+                }
+            }
+        }
+
+        function desenharTextosFlutuantes() {
+            for (const t of textosFlutuantes) {
+                ctx.save();
+                ctx.globalAlpha = t.alpha;
+                ctx.font = 'bold ' + Math.round(22 * t.escala) + 'px "Courier New", monospace';
+                ctx.textAlign = 'center';
+
+                // Contorno escuro (sombra manual para legibilidade)
+                ctx.fillStyle = '#000';
+                ctx.fillText(t.texto, t.x + 1, t.y + 1);
+                ctx.fillText(t.texto, t.x - 1, t.y - 1);
+
+                // Texto colorido
+                ctx.fillStyle = t.cor;
+                ctx.fillText(t.texto, t.x, t.y);
+                ctx.restore();
+            }
+        }
+
+        // --- PARTÍCULAS DE EXPLOSÃO ---
+        let particulas = [];
+
+        function criarExplosao(x, y, cor) {
+            const numParticulas = 8 + Math.floor(Math.random() * 5);
+            for (let i = 0; i < numParticulas; i++) {
+                const angulo = (Math.PI * 2 / numParticulas) * i + Math.random() * 0.5;
+                const velocidade = 2 + Math.random() * 4;
+                particulas.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angulo) * velocidade,
+                    vy: Math.sin(angulo) * velocidade - 1, // Leve tendência para cima
+                    tamanho: 2 + Math.random() * 4,
+                    cor: cor || '#FF6644',
+                    alpha: 1.0,
+                    vida: 25 + Math.floor(Math.random() * 15),
+                    gravidade: 0.1
+                });
+            }
+        }
+
+        function atualizarParticulas() {
+            for (let i = particulas.length - 1; i >= 0; i--) {
+                const p = particulas[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += p.gravidade; // Gravidade nas partículas
+                p.vida--;
+                p.alpha = Math.max(0, p.vida / 25);
+                p.tamanho = Math.max(0.5, p.tamanho - 0.08);
+
+                if (p.vida <= 0) {
+                    particulas.splice(i, 1);
+                }
+            }
+        }
+
+        function desenharParticulas() {
+            for (const p of particulas) {
+                ctx.save();
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.cor;
+                ctx.shadowColor = p.cor;
+                ctx.shadowBlur = 6;
+                ctx.fillRect(p.x - p.tamanho / 2, p.y - p.tamanho / 2, p.tamanho, p.tamanho);
+                ctx.restore();
+            }
+        }
+
+        // --- SCREEN SHAKE (Tremor de tela) ---
+        let screenShake = { intensidade: 0, duracao: 0, offsetX: 0, offsetY: 0 };
+
+        function ativarScreenShake(intensidade, duracao) {
+            screenShake.intensidade = intensidade;
+            screenShake.duracao = duracao;
+        }
+
+        function atualizarScreenShake() {
+            if (screenShake.duracao > 0) {
+                screenShake.offsetX = (Math.random() - 0.5) * screenShake.intensidade * 2;
+                screenShake.offsetY = (Math.random() - 0.5) * screenShake.intensidade * 2;
+                screenShake.duracao--;
+                screenShake.intensidade *= 0.9; // Diminui gradualmente
+            } else {
+                screenShake.offsetX = 0;
+                screenShake.offsetY = 0;
+            }
+        }
+
+        // --- FLASH DE DANO NA ÁRVORE ---
+        let flashDano = { alpha: 0 };
+
+        function ativarFlashDano() {
+            flashDano.alpha = 0.6;
+        }
+
+        function atualizarFlashDano() {
+            if (flashDano.alpha > 0) {
+                flashDano.alpha -= 0.03;
+                if (flashDano.alpha < 0) flashDano.alpha = 0;
+            }
+        }
+
+        function desenharFlashDano() {
+            if (flashDano.alpha > 0) {
+                ctx.save();
+                ctx.globalAlpha = flashDano.alpha;
+                ctx.fillStyle = '#FF0000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            }
+        }
+
+        // --- GAME OVER ANIMADO ---
+        let gameOverAnimacao = {
+            ativo: false,
+            fadeIn: 0,          // 0 a 1
+            tituloY: 0,         // Posição Y animada do título
+            statsAlpha: 0,      // Fade das estatísticas
+            btnAlpha: 0,        // Fade do botão
+            btnPulse: 0,        // Pulsação do botão
+            timestamp: 0
+        };
+
+        function iniciarGameOverAnimacao() {
+            gameOverAnimacao.ativo = true;
+            gameOverAnimacao.fadeIn = 0;
+            gameOverAnimacao.tituloY = -50;
+            gameOverAnimacao.statsAlpha = 0;
+            gameOverAnimacao.btnAlpha = 0;
+            gameOverAnimacao.btnPulse = 0;
+            gameOverAnimacao.timestamp = 0;
+        }
+
+        function atualizarGameOverAnimacao() {
+            if (!gameOverAnimacao.ativo) return;
+            gameOverAnimacao.timestamp++;
+
+            // Fase 1: Fade in do overlay (frames 0-20)
+            if (gameOverAnimacao.fadeIn < 1) {
+                gameOverAnimacao.fadeIn = Math.min(1, gameOverAnimacao.fadeIn + 0.05);
+            }
+
+            // Fase 2: Título desce para posição (frames 10+)
+            if (gameOverAnimacao.timestamp > 10) {
+                gameOverAnimacao.tituloY = Math.min(0, gameOverAnimacao.tituloY + 3);
+            }
+
+            // Fase 3: Stats aparecem (frames 30+)
+            if (gameOverAnimacao.timestamp > 30) {
+                gameOverAnimacao.statsAlpha = Math.min(1, gameOverAnimacao.statsAlpha + 0.05);
+            }
+
+            // Fase 4: Botão aparece (frames 50+)
+            if (gameOverAnimacao.timestamp > 50) {
+                gameOverAnimacao.btnAlpha = Math.min(1, gameOverAnimacao.btnAlpha + 0.05);
+            }
+
+            // Pulsação contínua do botão
+            gameOverAnimacao.btnPulse = Math.sin(gameOverAnimacao.timestamp * 0.08) * 0.1;
+        }
+
+        function desenharGameOver() {
+            const anim = gameOverAnimacao;
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            // Overlay escuro com fade
+            ctx.save();
+            ctx.globalAlpha = anim.fadeIn * 0.85;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // --- Painel central semi-transparente ---
+            const painelW = Math.min(350, canvas.width - 40);
+            const painelH = 410;
+            const painelX = cx - painelW / 2;
+            const painelY = cy - painelH / 2 - 10;
+
+            ctx.save();
+            ctx.globalAlpha = anim.fadeIn * 0.4;
+            ctx.fillStyle = '#111133';
+            // Bordas arredondadas manuais (retângulo com cantos)
+            const r = 15;
+            ctx.beginPath();
+            ctx.moveTo(painelX + r, painelY);
+            ctx.lineTo(painelX + painelW - r, painelY);
+            ctx.quadraticCurveTo(painelX + painelW, painelY, painelX + painelW, painelY + r);
+            ctx.lineTo(painelX + painelW, painelY + painelH - r);
+            ctx.quadraticCurveTo(painelX + painelW, painelY + painelH, painelX + painelW - r, painelY + painelH);
+            ctx.lineTo(painelX + r, painelY + painelH);
+            ctx.quadraticCurveTo(painelX, painelY + painelH, painelX, painelY + painelH - r);
+            ctx.lineTo(painelX, painelY + r);
+            ctx.quadraticCurveTo(painelX, painelY, painelX + r, painelY);
+            ctx.closePath();
+            ctx.fill();
+
+            // Borda brilhante do painel
+            ctx.globalAlpha = anim.fadeIn * 0.6;
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+
+            // --- "GAME OVER" com efeito de descida ---
+            ctx.save();
+            ctx.globalAlpha = anim.fadeIn;
+            ctx.textAlign = 'center';
+
+            // Sombra do título
+            ctx.fillStyle = '#440000';
+            ctx.font = 'bold 42px "Courier New", monospace';
+            ctx.fillText('GAME OVER', cx + 2, painelY + 55 + anim.tituloY + 2);
+
+            // Título principal
+            ctx.fillStyle = '#FF4444';
+            ctx.shadowColor = '#FF0000';
+            ctx.shadowBlur = 20;
+            ctx.fillText('GAME OVER', cx, painelY + 55 + anim.tituloY);
+            ctx.shadowBlur = 0;
+            ctx.restore();
+
+            // --- Linha decorativa ---
+            ctx.save();
+            ctx.globalAlpha = anim.statsAlpha * 0.5;
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(painelX + 30, painelY + 80);
+            ctx.lineTo(painelX + painelW - 30, painelY + 80);
+            ctx.stroke();
+            ctx.restore();
+
+            // --- Estatísticas com fade ---
+            ctx.save();
+            ctx.globalAlpha = anim.statsAlpha;
+            ctx.textAlign = 'center';
+
+            // Pontuação final (destaque)
+            ctx.fillStyle = '#FFD700';
+            ctx.font = 'bold 32px "Courier New", monospace';
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 10;
+            ctx.fillText('💰 ' + dracmas, cx, painelY + 120);
+            ctx.shadowBlur = 0;
+
+            ctx.font = '14px "Courier New", monospace';
+            ctx.fillStyle = '#ccaa55';
+            ctx.fillText('DRACMAS', cx, painelY + 140);
+
+            // Estatísticas detalhadas
+            ctx.font = '16px "Courier New", monospace';
+            ctx.fillStyle = '#cccccc';
+
+            // Monstros destruídos
+            ctx.fillText('⚔️  Monstros derrotados: ' + monstrosDestruidos, cx, painelY + 175);
+
+            // Bosses derrotados
+            if (bossesDestruidos > 0) {
+                ctx.fillStyle = '#FF8800';
+                ctx.fillText('🐂 Bosses derrotados: ' + bossesDestruidos, cx, painelY + 200);
+                ctx.fillStyle = '#cccccc';
+            }
+
+            // Nível alcançado
+            ctx.fillText('📈 Nível alcançado: ' + (nivelDificuldade + 1), cx, painelY + 225);
+
+            // Tempo
+            const mins = Math.floor(tempoDeJogo / 60);
+            const segs = Math.floor(tempoDeJogo % 60);
+            ctx.fillText('⏱️  Tempo: ' + mins + 'm ' + (segs < 10 ? '0' : '') + segs + 's', cx, painelY + 250);
+
+            // Novo recorde?
+            if (dracmas >= highScore && dracmas > 0) {
+                ctx.fillStyle = '#00FF88';
+                ctx.font = 'bold 20px "Courier New", monospace';
+                ctx.shadowColor = '#00FF88';
+                ctx.shadowBlur = 15;
+                ctx.fillText('⭐ NOVO RECORDE! ⭐', cx, painelY + 280);
+                ctx.shadowBlur = 0;
+            } else {
+                ctx.fillStyle = '#888';
+                ctx.font = '15px "Courier New", monospace';
+                ctx.fillText('🏆 Recorde: ' + highScore, cx, painelY + 278);
+            }
+            ctx.restore();
+
+            // --- Botão "Jogar Novamente" com pulsação ---
+            ctx.save();
+            ctx.globalAlpha = anim.btnAlpha;
+
+            const btnEscala = 1 + anim.btnPulse;
+            const btnW = Math.round(220 * btnEscala);
+            const btnH = Math.round(50 * btnEscala);
+            const btnX = cx - btnW / 2;
+            const btnY = painelY + painelH - 70;
+
+            // Sombra do botão
+            ctx.fillStyle = 'rgba(0, 80, 0, 0.5)';
+            ctx.beginPath();
+            ctx.moveTo(btnX + 10 + 3, btnY + 3);
+            ctx.lineTo(btnX + btnW - 10 + 3, btnY + 3);
+            ctx.quadraticCurveTo(btnX + btnW + 3, btnY + 3, btnX + btnW + 3, btnY + 10 + 3);
+            ctx.lineTo(btnX + btnW + 3, btnY + btnH - 10 + 3);
+            ctx.quadraticCurveTo(btnX + btnW + 3, btnY + btnH + 3, btnX + btnW - 10 + 3, btnY + btnH + 3);
+            ctx.lineTo(btnX + 10 + 3, btnY + btnH + 3);
+            ctx.quadraticCurveTo(btnX + 3, btnY + btnH + 3, btnX + 3, btnY + btnH - 10 + 3);
+            ctx.lineTo(btnX + 3, btnY + 10 + 3);
+            ctx.quadraticCurveTo(btnX + 3, btnY + 3, btnX + 10 + 3, btnY + 3);
+            ctx.closePath();
+            ctx.fill();
+
+            // Gradiente do botão
+            const btnGrad = ctx.createLinearGradient(btnX, btnY, btnX, btnY + btnH);
+            btnGrad.addColorStop(0, '#33aa44');
+            btnGrad.addColorStop(1, '#1a7a2a');
+            ctx.fillStyle = btnGrad;
+
+            ctx.beginPath();
+            ctx.moveTo(btnX + 10, btnY);
+            ctx.lineTo(btnX + btnW - 10, btnY);
+            ctx.quadraticCurveTo(btnX + btnW, btnY, btnX + btnW, btnY + 10);
+            ctx.lineTo(btnX + btnW, btnY + btnH - 10);
+            ctx.quadraticCurveTo(btnX + btnW, btnY + btnH, btnX + btnW - 10, btnY + btnH);
+            ctx.lineTo(btnX + 10, btnY + btnH);
+            ctx.quadraticCurveTo(btnX, btnY + btnH, btnX, btnY + btnH - 10);
+            ctx.lineTo(btnX, btnY + 10);
+            ctx.quadraticCurveTo(btnX, btnY, btnX + 10, btnY);
+            ctx.closePath();
+            ctx.fill();
+
+            // Borda brilhante
+            ctx.strokeStyle = '#55ee66';
+            ctx.lineWidth = 2;
+            ctx.shadowColor = '#55ee66';
+            ctx.shadowBlur = 8;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Texto do botão
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 20px "Courier New", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('⚔️ Jogar Novamente', cx, btnY + btnH / 2 + 7);
+            ctx.restore();
+
+            // Guardar posição REAL do botão (sem considerar pulsação, para hitbox estável)
+            window._btnRestart = { x: cx - 120, y: btnY - 5, w: 240, h: btnH + 10 };
+        }
+
+        // =============================================================
+        // FIM DO SISTEMA DE EFEITOS
+        // =============================================================
+
+        // --- MONSTRO: Criar e Gerenciar ---
+        function criarMonstro() {
+            const margem = TAMANHO_SPRITE / 2;
+            const x = margem + Math.random() * (canvas.width - TAMANHO_SPRITE);
+            return {
+                x: x,
+                y: -TAMANHO_SPRITE,
+                largura: TAMANHO_SPRITE,
+                altura: TAMANHO_SPRITE,
+                velocidade: velocidadeQueda + (Math.random() * 1), // Variação leve
+                ativo: true
+            };
+        }
+
+        function spawnMonstro(timestamp) {
+            if (timestamp - ultimoSpawn > spawnInterval) {
+                monstros.push(criarMonstro());
+                ultimoSpawn = timestamp;
+            }
+        }
+
+        // --- POSIÇÃO DA ÁRVORE ---
+        function getArvorePos() {
+            const escala = Math.min(canvas.width / 4, 120); // Tamanho adaptativo
+            return {
+                x: canvas.width / 2 - escala / 2,
+                y: canvas.height - escala - 10,
+                largura: escala,
+                altura: escala
+            };
+        }
+
+        // --- DESENHAR: Funções de Renderização ---
+
+        function desenharFundo() {
+            // Gradiente de céu noturno
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, '#0a0a2e');
+            grad.addColorStop(0.5, '#1a1a4e');
+            grad.addColorStop(1, '#0d3320');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Estrelas decorativas
+            ctx.fillStyle = '#ffffff';
+            const numEstrelas = 50;
+            for (let i = 0; i < numEstrelas; i++) {
+                const seed = i * 7919;
+                const ex = (seed * 13) % canvas.width;
+                const ey = (seed * 7) % (canvas.height * 0.6);
+                const tamanho = (i % 3 === 0) ? 2 : 1;
+                ctx.globalAlpha = 0.3 + (i % 5) * 0.15;
+                ctx.fillRect(ex, ey, tamanho, tamanho);
+            }
+            ctx.globalAlpha = 1;
+
+            // Chão (grama)
+            ctx.fillStyle = '#1a5c2a';
+            ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+            ctx.fillStyle = '#237a36';
+            ctx.fillRect(0, canvas.height - 30, canvas.width, 5);
+        }
+
+        function desenharArvore() {
+            const pos = getArvorePos();
+
+            if (arvoreCarregada) {
+                ctx.drawImage(imgArvore, pos.x, pos.y, pos.largura, pos.altura);
+            } else {
+                // FALLBACK: Árvore geométrica
+                const cx = pos.x + pos.largura / 2;
+                const base = pos.y + pos.altura;
+
+                ctx.fillStyle = '#8B4513';
+                ctx.fillRect(cx - 8, base - 30, 16, 30);
+
+                ctx.fillStyle = '#228B22';
+                ctx.beginPath();
+                ctx.moveTo(cx - 35, base - 25);
+                ctx.lineTo(cx + 35, base - 25);
+                ctx.lineTo(cx, base - 65);
+                ctx.closePath();
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(cx - 25, base - 50);
+                ctx.lineTo(cx + 25, base - 50);
+                ctx.lineTo(cx, base - 85);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.strokeStyle = '#FFD700';
+                ctx.lineWidth = 2;
+                ctx.shadowColor = '#FFD700';
+                ctx.shadowBlur = 15;
+                ctx.beginPath();
+                ctx.arc(cx, base - 50, 45, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        function desenharMonstro(m) {
+            if (monstroCarregado) {
+                ctx.drawImage(imgMonstro, m.x, m.y, m.largura, m.altura);
+            } else {
+                const cx = m.x + m.largura / 2;
+                const cy = m.y + m.altura / 2;
+                ctx.fillStyle = '#CC2244';
+                ctx.fillRect(m.x + 8, m.y + 8, m.largura - 16, m.altura - 16);
+                ctx.fillStyle = '#FFFF00';
+                ctx.fillRect(cx - 12, cy - 8, 8, 8);
+                ctx.fillRect(cx + 4, cy - 8, 8, 8);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(cx - 10, cy - 6, 4, 4);
+                ctx.fillRect(cx + 6, cy - 6, 4, 4);
+                ctx.fillRect(cx - 8, cy + 6, 16, 4);
+            }
+        }
+
+        function desenharHUD() {
+            // Fundo semi-transparente do HUD
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(0, 0, canvas.width, 50);
+
+            // Dracmas (pontos)
+            ctx.fillStyle = '#FFD700';
+            ctx.font = 'bold 20px "Courier New", monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('💰 ' + dracmas + ' Dracmas', 10, 33);
+
+            // Vidas (corações)
+            ctx.textAlign = 'right';
+            let coracoes = '';
+            for (let i = 0; i < VIDAS_INICIAIS; i++) {
+                coracoes += (i < vidas) ? '❤️' : '🖤';
+            }
+            ctx.fillText(coracoes, canvas.width - 10, 33);
+
+            // High Score
+            ctx.fillStyle = '#aaa';
+            ctx.font = '12px "Courier New", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('🏆 Recorde: ' + highScore, canvas.width / 2, 18);
+
+            // Nível de dificuldade
+            ctx.fillStyle = '#ff9944';
+            ctx.fillText('Nível ' + (nivelDificuldade + 1), canvas.width / 2, 38);
+        }
+
+        // --- LÓGICA: Atualização do jogo ---
+        function atualizar(timestamp) {
+            if (gameOver) {
+                atualizarGameOverAnimacao();
+                // Ainda atualiza efeitos visuais residuais
+                atualizarParticulas();
+                atualizarTextosFlutuantes();
+                return;
+            }
+
+            // Tempo de jogo
+            if (timestampInicio === 0) timestampInicio = timestamp;
+            tempoDeJogo = (timestamp - timestampInicio) / 1000;
+
+            // Spawn de novos monstros
+            spawnMonstro(timestamp);
+
+            // Verificar spawn de boss
+            verificarSpawnBoss();
+
+            // Atualizar efeitos
+            atualizarTextosFlutuantes();
+            atualizarParticulas();
+            atualizarScreenShake();
+            atualizarFlashDano();
+
+            // Mover monstros para baixo
+            const linhaDoChao = canvas.height - 30;
+
+            for (let i = monstros.length - 1; i >= 0; i--) {
+                const m = monstros[i];
+                if (!m.ativo) continue;
+
+                m.y += m.velocidade;
+
+                // Monstro atingiu o chão?
+                if (m.y + m.altura >= linhaDoChao) {
+                    m.ativo = false;
+                    vidas--;
+
+                    // --- EFEITOS DE DANO (Passo 3) ---
+                    ativarScreenShake(8, 12);      // Tremor na tela
+                    ativarFlashDano();              // Flash vermelho
+                    criarTextoFlutuante(
+                        m.x + m.largura / 2,
+                        linhaDoChao - 20,
+                        '-1 ❤️',
+                        '#FF4444'
+                    );
+
+                    // --- SOM DE DANO (Passo 4) ---
+                    somDano();
+
+                    // Vibrar o dispositivo (feedback tátil) se disponível
+                    if (navigator.vibrate) navigator.vibrate(100);
+
+                    perdeuVida();
+                }
+            }
+
+            // --- ATUALIZAR BOSS ---
+            if (boss && boss.ativo) {
+                boss.y += boss.velocidade;
+                // Flash do boss ao receber dano
+                if (boss.flashTimer > 0) boss.flashTimer--;
+                // Aviso pulsante no topo
+                if (bossAviso.ativo) {
+                    bossAviso.timer--;
+                    bossAviso.alpha = Math.sin(bossAviso.timer * 0.15) * 0.5 + 0.5;
+                    if (bossAviso.timer <= 0) bossAviso.ativo = false;
+                }
+
+                // Boss atingiu o chão?
+                if (boss.y + boss.altura >= linhaDoChao) {
+                    boss.ativo = false;
+                    boss = null;
+                    vidas -= 2; // Boss tira 2 vidas!
+
+                    ativarScreenShake(15, 20);      // Tremor FORTE
+                    ativarFlashDano();
+                    criarTextoFlutuante(
+                        canvas.width / 2,
+                        linhaDoChao - 30,
+                        '-2 ❤️❤️',
+                        '#FF0000'
+                    );
+                    somDano();
+                    if (navigator.vibrate) navigator.vibrate(200);
+
+                    perdeuVida();
+                }
+            }
+
+            // Remover monstros inativos
+            monstros = monstros.filter(m => m.ativo);
+        }
+
+        // --- LOOP PRINCIPAL (60 FPS via requestAnimationFrame) ---
+        function gameLoop(timestamp) {
+            // Atualizar lógica
+            atualizar(timestamp);
+
+            // Aplicar screen shake
+            ctx.save();
+            ctx.translate(screenShake.offsetX, screenShake.offsetY);
+
+            // Renderizar
+            desenharFundo();
+            desenharArvore();
+
+            // Desenhar todos os monstros ativos
+            for (const m of monstros) {
+                if (m.ativo) desenharMonstro(m);
+            }
+
+            // Desenhar Boss
+            if (boss && boss.ativo) {
+                desenharBoss();
+            }
+
+            // Desenhar aviso de Boss
+            if (bossAviso.ativo) {
+                desenharBossAviso();
+            }
+
+            // Efeitos visuais (sobre os monstros)
+            desenharParticulas();
+            desenharTextosFlutuantes();
+
+            desenharHUD();
+
+            // Flash de dano (sobre tudo)
+            desenharFlashDano();
+
+            ctx.restore(); // Restaurar screen shake
+
+            // Tela de Game Over (fora do screen shake para ficar estável)
+            if (gameOver) {
+                desenharGameOver();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- DETECÇÃO DE TOQUE / CLIQUE ---
+        function verificarToque(x, y) {
+            if (gameOver) {
+                // Só permite clicar no botão após ele aparecer
+                if (gameOverAnimacao.btnAlpha < 0.5) return;
+
+                const btn = window._btnRestart;
+                if (btn && x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+                    reiniciarJogo();
+                }
+                return;
+            }
+
+            // --- VERIFICAR TOQUE NO BOSS PRIMEIRO ---
+            if (boss && boss.ativo) {
+                const bx = boss.x - HITBOX_EXTRA;
+                const by = boss.y - HITBOX_EXTRA;
+                const bw = boss.largura + HITBOX_EXTRA * 2;
+                const bh = boss.altura + HITBOX_EXTRA * 2;
+
+                if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) {
+                    boss.hp--;
+                    boss.flashTimer = 8; // Flash branco de dano
+
+                    const bcx = boss.x + boss.largura / 2;
+                    const bcy = boss.y + boss.altura / 2;
+
+                    // Efeito de hit
+                    criarExplosao(bcx, bcy, '#FF8800');
+                    somBossHit();
+                    criarTextoFlutuante(bcx, bcy - 20, 'HIT!', '#FF8800');
+                    if (navigator.vibrate) navigator.vibrate(50);
+
+                    // Boss derrotado?
+                    if (boss.hp <= 0) {
+                        boss.ativo = false;
+                        dracmas += BOSS_PONTOS;
+                        bossesDestruidos++;
+                        monstrosDestruidos++;
+                        atualizarDificuldade();
+
+                        // Mega explosão!
+                        criarTextoFlutuante(bcx, bcy - 30, '+' + BOSS_PONTOS + ' 🌟', '#FFD700');
+                        for (let e = 0; e < 5; e++) {
+                            criarExplosao(bcx + (Math.random() - 0.5) * 40, bcy + (Math.random() - 0.5) * 40, '#FF4400');
+                            criarExplosao(bcx + (Math.random() - 0.5) * 40, bcy + (Math.random() - 0.5) * 40, '#FFDD00');
+                            criarExplosao(bcx + (Math.random() - 0.5) * 40, bcy + (Math.random() - 0.5) * 40, '#FF00FF');
+                        }
+
+                        somBossDerrotado();
+                        ativarScreenShake(10, 15);
+                        if (navigator.vibrate) navigator.vibrate(100);
+
+                        boss = null;
+                    }
+                    return; // Boss absorve o toque
+                }
+            }
+
+            // Verificar toque em monstros (de cima para baixo na lista para pegar os da frente)
+            for (let i = monstros.length - 1; i >= 0; i--) {
+                const m = monstros[i];
+                if (!m.ativo) continue;
+
+                // Hitbox facilitada (20px maior em cada lado)
+                const hx = m.x - HITBOX_EXTRA;
+                const hy = m.y - HITBOX_EXTRA;
+                const hw = m.largura + HITBOX_EXTRA * 2;
+                const hh = m.altura + HITBOX_EXTRA * 2;
+
+                if (x >= hx && x <= hx + hw && y >= hy && y <= hy + hh) {
+                    // Monstro destruído!
+                    m.ativo = false;
+                    dracmas += PONTOS_POR_MONSTRO;
+                    monstrosDestruidos++;
+                    atualizarDificuldade();
+
+                    // --- EFEITOS DE DESTRUIÇÃO (Passo 3) ---
+                    const mx = m.x + m.largura / 2;
+                    const my = m.y + m.altura / 2;
+
+                    // Texto "+10" flutuando
+                    criarTextoFlutuante(mx, my - 10, '+10', '#FFD700');
+
+                    // Explosão de partículas coloridas
+                    criarExplosao(mx, my, '#FF6644');   // Laranja
+                    criarExplosao(mx, my, '#FFDD44');   // Dourado
+                    criarExplosao(mx, my, '#CC44FF');   // Roxo (tema harpia)
+
+                    // --- SONS (Passo 4) ---
+                    somEspada();    // Swoosh de espada
+                    somMoeda();     // Bling de moeda
+
+                    // Vibrar (feedback de sucesso)
+                    if (navigator.vibrate) navigator.vibrate(30);
+
+                    break; // Só destrói 1 monstro por toque
+                }
+            }
+        }
+
+        // --- Função auxiliar: perdeu vida ---
+        function perdeuVida() {
+            if (vidas <= 0) {
+                vidas = 0;
+                gameOver = true;
+                iniciarGameOverAnimacao();
+                somGameOver();
+                if (dracmas > highScore) {
+                    highScore = dracmas;
+                    try { localStorage.setItem('pinheiro_highscore', highScore); } catch (e) { }
+                }
+            }
+        }
+
+        // =============================================================
+        // 🐂 PASSO 5: SISTEMA DE BOSS MONSTER
+        // =============================================================
+
+        function criarBoss() {
+            const margem = BOSS_TAMANHO / 2;
+            return {
+                x: margem + Math.random() * (canvas.width - BOSS_TAMANHO),
+                y: -BOSS_TAMANHO,
+                largura: BOSS_TAMANHO,
+                altura: BOSS_TAMANHO,
+                velocidade: Math.max(0.8, velocidadeQueda * 0.5), // Mais lento que monstros normais
+                hp: BOSS_HP,
+                hpMax: BOSS_HP,
+                ativo: true,
+                flashTimer: 0
+            };
+        }
+
+        function verificarSpawnBoss() {
+            if (boss && boss.ativo) return; // Já tem boss ativo
+            if (dracmas >= proximoBossDracmas) {
+                boss = criarBoss();
+                proximoBossDracmas += BOSS_DRACMAS_INTERVALO;
+                // Ativar aviso
+                bossAviso = { ativo: true, alpha: 1, timer: 120 }; // 2 segundos de aviso
+                somBossRugido();
+                ativarScreenShake(5, 10);
+            }
+        }
+
+        function desenharBoss() {
+            if (!boss || !boss.ativo) return;
+
+            ctx.save();
+
+            // Flash branco ao receber dano
+            if (boss.flashTimer > 0 && boss.flashTimer % 2 === 0) {
+                ctx.globalAlpha = 0.7;
+            }
+
+            if (bossCarregado) {
+                ctx.drawImage(imgBoss, boss.x, boss.y, boss.largura, boss.altura);
+                // Se flash, desenhar overlay branco
+                if (boss.flashTimer > 0 && boss.flashTimer % 2 === 0) {
+                    ctx.globalCompositeOperation = 'source-atop';
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillRect(boss.x, boss.y, boss.largura, boss.altura);
+                    ctx.globalCompositeOperation = 'source-over';
+                }
+            } else {
+                // FALLBACK: Boss geométrico (Minotauro simplificado)
+                const cx = boss.x + boss.largura / 2;
+                const cy = boss.y + boss.altura / 2;
+
+                // Corpo
+                ctx.fillStyle = (boss.flashTimer > 0 && boss.flashTimer % 2 === 0) ? '#FFFFFF' : '#663322';
+                ctx.fillRect(boss.x + 16, boss.y + 30, boss.largura - 32, boss.altura - 40);
+
+                // Chifres
+                ctx.fillStyle = '#999';
+                ctx.beginPath();
+                ctx.moveTo(cx - 30, boss.y + 25);
+                ctx.lineTo(cx - 45, boss.y);
+                ctx.lineTo(cx - 20, boss.y + 30);
+                ctx.closePath();
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(cx + 30, boss.y + 25);
+                ctx.lineTo(cx + 45, boss.y);
+                ctx.lineTo(cx + 20, boss.y + 30);
+                ctx.closePath();
+                ctx.fill();
+
+                // Olhos vermelhos
+                ctx.fillStyle = '#FF0000';
+                ctx.fillRect(cx - 18, cy - 10, 10, 10);
+                ctx.fillRect(cx + 8, cy - 10, 10, 10);
+            }
+
+            ctx.restore();
+
+            // --- BARRA DE VIDA DO BOSS ---
+            const barraW = boss.largura;
+            const barraH = 8;
+            const barraX = boss.x;
+            const barraY = boss.y - 14;
+            const hpPercentual = boss.hp / boss.hpMax;
+
+            // Fundo da barra
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(barraX - 1, barraY - 1, barraW + 2, barraH + 2);
+
+            // Barra de vida (verde -> amarelo -> vermelho)
+            let corBarra;
+            if (hpPercentual > 0.5) {
+                corBarra = '#44FF44';
+            } else if (hpPercentual > 0.25) {
+                corBarra = '#FFAA00';
+            } else {
+                corBarra = '#FF3333';
+            }
+            ctx.fillStyle = corBarra;
+            ctx.fillRect(barraX, barraY, barraW * hpPercentual, barraH);
+
+            // Borda da barra
+            ctx.strokeStyle = '#FFF';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(barraX, barraY, barraW, barraH);
+
+            // Texto HP
+            ctx.fillStyle = '#FFF';
+            ctx.font = 'bold 10px "Courier New", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(boss.hp + '/' + boss.hpMax, boss.x + boss.largura / 2, barraY - 3);
+        }
+
+        function desenharBossAviso() {
+            if (!bossAviso.ativo) return;
+
+            ctx.save();
+            ctx.globalAlpha = bossAviso.alpha;
+
+            // Faixa vermelha no topo
+            const grad = ctx.createLinearGradient(0, 55, 0, 110);
+            grad.addColorStop(0, 'rgba(180, 0, 0, 0.9)');
+            grad.addColorStop(1, 'rgba(100, 0, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 55, canvas.width, 55);
+
+            // Texto de aviso
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 28px "Courier New", monospace';
+            ctx.textAlign = 'center';
+            ctx.shadowColor = '#FF0000';
+            ctx.shadowBlur = 20;
+            ctx.fillText('⚠️ BOSS: MINOTAURO! ⚠️', canvas.width / 2, 90);
+            ctx.shadowBlur = 0;
+
+            ctx.restore();
+        }
+
+        function reiniciarJogo() {
+            dracmas = 0;
+            vidas = VIDAS_INICIAIS;
+            monstros = [];
+            gameOver = false;
+            nivelDificuldade = 0;
+            spawnInterval = 1200;
+            velocidadeQueda = 2;
+            ultimoSpawn = 0;
+            monstrosDestruidos = 0;
+            bossesDestruidos = 0;
+            tempoDeJogo = 0;
+            timestampInicio = 0;
+            textosFlutuantes = [];
+            particulas = [];
+            screenShake = { intensidade: 0, duracao: 0, offsetX: 0, offsetY: 0 };
+            flashDano = { alpha: 0 };
+            gameOverAnimacao = {
+                ativo: false, fadeIn: 0, tituloY: -50,
+                statsAlpha: 0, btnAlpha: 0, btnPulse: 0, timestamp: 0
+            };
+            boss = null;
+            proximoBossDracmas = BOSS_DRACMAS_INTERVALO;
+            bossAviso = { ativo: false, alpha: 0, timer: 0 };
+        }
+
+        // --- EVENTOS DE TOQUE (Mobile - com multitouch) ---
+        canvas.addEventListener('touchstart', function (e) {
+            e.preventDefault(); // OBRIGATÓRIO: previne zoom/scroll no iPhone
+            desbloquearAudio(); // Desbloquear áudio no primeiro toque
+
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const touch = e.changedTouches[i];
+                const rect = canvas.getBoundingClientRect();
+                const x = touch.clientX - rect.left;
+                const y = touch.clientY - rect.top;
+                verificarToque(x, y);
+            }
+        }, { passive: false });
+
+        // Prevenir outros gestos problemáticos no mobile
+        canvas.addEventListener('touchmove', function (e) {
+            e.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+        }, { passive: false });
+
+        // --- EVENTO DE CLIQUE (PC) ---
+        canvas.addEventListener('click', function (e) {
+            desbloquearAudio(); // Desbloquear áudio no primeiro clique
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            verificarToque(x, y);
+        });
+
+        // --- PREVENIR MENU DE CONTEXTO (botão direito / long press) ---
+        canvas.addEventListener('contextmenu', function (e) {
+            e.preventDefault();
+        });
+
+        // --- INICIAR O JOGO ---
+        console.log('🎮 Defesa do Pinheiro Mágico - Passo 5: Boss Monster');
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+
+</html>

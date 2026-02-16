@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Defesa do Pinheiro Mágico</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+        }
+
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // =============================================================
+        // 🎮 DEFESA DO PINHEIRO MÁGICO — Liquid Glass Edition
+        // UI is handled by native SwiftUI. This file is canvas-only.
+        // =============================================================
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- IMAGENS ---
+        let imgArvore = new Image(), imgMonstro = new Image(), imgBoss = new Image();
+        let arvoreCarregada = false, monstroCarregado = false, bossCarregado = false;
+        imgArvore.onload = () => arvoreCarregada = true;
+        imgArvore.src = 'arvore.png';
+        imgMonstro.onload = () => monstroCarregado = true;
+        imgMonstro.src = 'monstro.png';
+        imgBoss.onload = () => bossCarregado = true;
+        imgBoss.src = 'boss.png';
+
+        // --- CONSTANTES ---
+        const TAMANHO_SPRITE = 64;
+        const HITBOX_EXTRA = 20;
+        const VIDAS_INICIAIS = 3;
+        const PONTOS_POR_MONSTRO = 10;
+        const DRACMAS_PARA_DIFICULDADE = 100;
+        const BOSS_DRACMAS_INTERVALO = 200;
+        const BOSS_HP = 5;
+        const BOSS_TAMANHO = 128;
+        const BOSS_PONTOS = 50;
+
+        // --- ESTADO ---
+        let dracmas = 0;
+        let vidas = VIDAS_INICIAIS;
+        let monstros = [];
+        let gameOver = false;
+        let highScore = 0;
+        let monstrosDestruidos = 0;
+        let bossesDestruidos = 0;
+        let tempoDeJogo = 0;
+        let timestampInicio = 0;
+        let boss = null;
+        let proximoBossDracmas = BOSS_DRACMAS_INTERVALO;
+        let bossAvisoAtivo = false;
+        let bossAvisoTimer = 0;
+
+        try { const saved = localStorage.getItem('pinheiro_highscore'); if (saved) highScore = parseInt(saved); } catch (e) { }
+
+        // =============================================================
+        // 🔊 ÁUDIO
+        // =============================================================
+        let audioCtx = null, audioDesbloqueado = false;
+        function desbloquearAudio() {
+            if (audioDesbloqueado) return;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const s = audioCtx.createBuffer(1, 1, 22050);
+                const f = audioCtx.createBufferSource(); f.buffer = s;
+                f.connect(audioCtx.destination); f.start(0);
+                audioDesbloqueado = true;
+            } catch (e) { }
+        }
+
+        function somEspada() {
+            if (!audioCtx) return;
+            const dur = 0.15, taxa = audioCtx.sampleRate;
+            const buf = audioCtx.createBuffer(1, taxa * dur, taxa);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+            const src = audioCtx.createBufferSource(); src.buffer = buf;
+            const filt = audioCtx.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 3000;
+            const g = audioCtx.createGain(); g.gain.value = 0.3;
+            src.connect(filt); filt.connect(g); g.connect(audioCtx.destination); src.start();
+        }
+        function somMoeda() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            [780, 1050].forEach((f, i) => {
+                const o = audioCtx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.15, t + i * 0.07);
+                g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.07 + 0.12);
+                o.connect(g); g.connect(audioCtx.destination);
+                o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.15);
+            });
+        }
+        function somDano() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            const o = audioCtx.createOscillator(); o.type = 'sine';
+            o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(50, t + 0.3);
+            const g = audioCtx.createGain(); g.gain.setValueAtTime(0.4, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+            o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + 0.3);
+        }
+        function somGameOver() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            [440, 370, 330, 220].forEach((f, i) => {
+                const o = audioCtx.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
+                const g = audioCtx.createGain(); const s = t + i * 0.25;
+                g.gain.setValueAtTime(0.2, s); g.gain.exponentialRampToValueAtTime(0.001, s + 0.3);
+                o.connect(g); g.connect(audioCtx.destination); o.start(s); o.stop(s + 0.35);
+            });
+        }
+        function somBossRugido() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+            o.frequency.setValueAtTime(80, t); o.frequency.linearRampToValueAtTime(60, t + 0.6);
+            const g = audioCtx.createGain(); g.gain.setValueAtTime(0.3, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+            o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + 0.6);
+        }
+        function somBossHit() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            const o = audioCtx.createOscillator(); o.type = 'square';
+            o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(100, t + 0.1);
+            const g = audioCtx.createGain(); g.gain.setValueAtTime(0.25, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+            o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + 0.15);
+        }
+        function somBossDerrotado() {
+            if (!audioCtx) return; const t = audioCtx.currentTime;
+            [523, 659, 784, 1047].forEach((f, i) => {
+                const o = audioCtx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.18, t + i * 0.12);
+                g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + 0.2);
+                o.connect(g); g.connect(audioCtx.destination);
+                o.start(t + i * 0.12); o.stop(t + i * 0.12 + 0.25);
+            });
+        }
+
+        // =============================================================
+        // ⚙️ JOGO
+        // =============================================================
+        let spawnInterval = 1200, velocidadeQueda = 2, nivelDificuldade = 0, ultimoSpawn = 0;
+
+        function atualizarDificuldade() {
+            const n = Math.floor(dracmas / DRACMAS_PARA_DIFICULDADE);
+            if (n > nivelDificuldade) {
+                nivelDificuldade = n;
+                spawnInterval = Math.max(300, 1200 - nivelDificuldade * 100);
+                velocidadeQueda = Math.min(8, 2 + nivelDificuldade * 0.5);
+            }
+        }
+
+        // --- EFEITOS VISUAIS (Canvas) ---
+        let textosFlutuantes = [], particulas = [];
+        let screenShake = { i: 0, d: 0, ox: 0, oy: 0 };
+        let flashDano = { alpha: 0 };
+
+        function criarTextoFlutuante(x, y, texto, cor) {
+            textosFlutuantes.push({ x, y, texto, cor: cor || '#FFD700', alpha: 1, vel: -2.5, vida: 60 });
+        }
+        function criarExplosao(x, y, cor) {
+            for (let i = 0; i < 8; i++) {
+                const a = Math.PI * 2 / 8 * i + Math.random() * 0.5, v = 2 + Math.random() * 4;
+                particulas.push({
+                    x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1,
+                    tam: 2 + Math.random() * 4, cor: cor || '#FF6644', alpha: 1, vida: 25 + Math.random() * 15, g: 0.1
+                });
+            }
+        }
+
+        function atualizarEfeitos() {
+            for (let i = textosFlutuantes.length - 1; i >= 0; i--) {
+                const t = textosFlutuantes[i]; t.y += t.vel; t.vida--;
+                t.alpha = Math.max(0, t.vida / 40);
+                if (t.vida <= 0) textosFlutuantes.splice(i, 1);
+            }
+            for (let i = particulas.length - 1; i >= 0; i--) {
+                const p = particulas[i]; p.x += p.vx; p.y += p.vy; p.vy += p.g;
+                p.vida--; p.alpha = Math.max(0, p.vida / 25); p.tam = Math.max(0.5, p.tam - 0.08);
+                if (p.vida <= 0) particulas.splice(i, 1);
+            }
+            if (screenShake.d > 0) {
+                screenShake.ox = (Math.random() - 0.5) * screenShake.i * 2;
+                screenShake.oy = (Math.random() - 0.5) * screenShake.i * 2;
+                screenShake.d--; screenShake.i *= 0.9;
+            } else { screenShake.ox = 0; screenShake.oy = 0; }
+            if (flashDano.alpha > 0) { flashDano.alpha -= 0.03; if (flashDano.alpha < 0) flashDano.alpha = 0; }
+        }
+
+        function desenharEfeitos() {
+            for (const t of textosFlutuantes) {
+                ctx.save(); ctx.globalAlpha = t.alpha;
+                ctx.font = 'bold 22px system-ui, sans-serif'; ctx.textAlign = 'center';
+                ctx.fillStyle = '#000'; ctx.fillText(t.texto, t.x + 1, t.y + 1);
+                ctx.fillStyle = t.cor; ctx.fillText(t.texto, t.x, t.y);
+                ctx.restore();
+            }
+            for (const p of particulas) {
+                ctx.save(); ctx.globalAlpha = p.alpha; ctx.fillStyle = p.cor;
+                ctx.shadowColor = p.cor; ctx.shadowBlur = 6;
+                ctx.fillRect(p.x - p.tam / 2, p.y - p.tam / 2, p.tam, p.tam);
+                ctx.restore();
+            }
+            if (flashDano.alpha > 0) {
+                ctx.save(); ctx.globalAlpha = flashDano.alpha;
+                ctx.fillStyle = '#FF0000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            }
+        }
+
+        // --- JS BRIDGE → SWIFT ---
+        function enviarEstado() {
+            try {
+                window.webkit.messageHandlers.gameState.postMessage({
+                    dracmas: dracmas,
+                    vidas: vidas,
+                    nivel: nivelDificuldade + 1,
+                    gameOver: gameOver,
+                    monstrosDestruidos: monstrosDestruidos,
+                    bossesDestruidos: bossesDestruidos,
+                    tempoDeJogo: tempoDeJogo,
+                    highScore: highScore,
+                    bossWarning: bossAvisoAtivo
+                });
+            } catch (e) {
+                // Rodando fora do WKWebView (ex: browser)
+            }
+        }
+
+        // --- GAME ENTITIES ---
+        function criarMonstro() {
+            return {
+                x: TAMANHO_SPRITE / 2 + Math.random() * (canvas.width - TAMANHO_SPRITE),
+                y: -TAMANHO_SPRITE, w: TAMANHO_SPRITE, h: TAMANHO_SPRITE,
+                v: velocidadeQueda + Math.random(), ativo: true
+            };
+        }
+        function spawnMonstro(ts) { if (ts - ultimoSpawn > spawnInterval) { monstros.push(criarMonstro()); ultimoSpawn = ts; } }
+
+        function criarBoss() {
+            return {
+                x: canvas.width / 2 - BOSS_TAMANHO / 2, y: -BOSS_TAMANHO,
+                w: BOSS_TAMANHO, h: BOSS_TAMANHO, v: Math.max(0.8, velocidadeQueda * 0.5),
+                hp: BOSS_HP, hpMax: BOSS_HP, ativo: true, flash: 0
+            };
+        }
+        function verificarSpawnBoss() {
+            if (boss && boss.ativo) return;
+            if (dracmas >= proximoBossDracmas) {
+                boss = criarBoss(); proximoBossDracmas += BOSS_DRACMAS_INTERVALO;
+                bossAvisoAtivo = true; bossAvisoTimer = 120;
+                somBossRugido();
+                screenShake.i = 5; screenShake.d = 10;
+                enviarEstado(); // notify Swift immediately
+            }
+        }
+
+        function getArvorePos() {
+            const e = Math.min(canvas.width / 4, 120);
+            return { x: canvas.width / 2 - e / 2, y: canvas.height - e - 10, w: e, h: e };
+        }
+
+        // --- DRAWING ---
+        function desenharFundo() {
+            const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            g.addColorStop(0, '#0a0a2e'); g.addColorStop(0.5, '#1a1a4e'); g.addColorStop(1, '#0d3320');
+            ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            // Stars
+            ctx.fillStyle = '#fff';
+            for (let i = 0; i < 50; i++) {
+                const s = i * 7919, ex = (s * 13) % canvas.width, ey = (s * 7) % (canvas.height * 0.6);
+                ctx.globalAlpha = 0.3 + (i % 5) * 0.15;
+                ctx.fillRect(ex, ey, (i % 3 === 0) ? 2 : 1, (i % 3 === 0) ? 2 : 1);
+            }
+            ctx.globalAlpha = 1;
+            // Ground
+            ctx.fillStyle = '#1a5c2a'; ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+            ctx.fillStyle = '#237a36'; ctx.fillRect(0, canvas.height - 30, canvas.width, 5);
+        }
+
+        function desenharArvore() {
+            const p = getArvorePos();
+            if (arvoreCarregada) { ctx.drawImage(imgArvore, p.x, p.y, p.w, p.h); return; }
+            const cx = p.x + p.w / 2, base = p.y + p.h;
+            ctx.fillStyle = '#8B4513'; ctx.fillRect(cx - 8, base - 30, 16, 30);
+            ctx.fillStyle = '#228B22';
+            ctx.beginPath(); ctx.moveTo(cx - 35, base - 25); ctx.lineTo(cx + 35, base - 25); ctx.lineTo(cx, base - 65); ctx.closePath(); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(cx - 25, base - 50); ctx.lineTo(cx + 25, base - 50); ctx.lineTo(cx, base - 85); ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2; ctx.shadowColor = '#FFD700'; ctx.shadowBlur = 15;
+            ctx.beginPath(); ctx.arc(cx, base - 50, 45, 0, Math.PI * 2); ctx.stroke(); ctx.shadowBlur = 0;
+        }
+
+        function desenharMonstro(m) {
+            if (monstroCarregado) { ctx.drawImage(imgMonstro, m.x, m.y, m.w, m.h); return; }
+            const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+            ctx.fillStyle = '#CC2244'; ctx.fillRect(m.x + 8, m.y + 8, m.w - 16, m.h - 16);
+            ctx.fillStyle = '#FFFF00'; ctx.fillRect(cx - 12, cy - 8, 8, 8); ctx.fillRect(cx + 4, cy - 8, 8, 8);
+        }
+
+        function desenharBoss() {
+            if (!boss || !boss.ativo) return;
+            ctx.save();
+            if (boss.flash > 0 && boss.flash % 2 === 0) ctx.globalAlpha = 0.7;
+            if (bossCarregado) ctx.drawImage(imgBoss, boss.x, boss.y, boss.w, boss.h);
+            else {
+                const cx = boss.x + boss.w / 2;
+                ctx.fillStyle = (boss.flash > 0 && boss.flash % 2 === 0) ? '#FFF' : '#663322';
+                ctx.fillRect(boss.x + 16, boss.y + 30, boss.w - 32, boss.h - 40);
+            }
+            ctx.restore();
+            // HP Bar
+            const pct = boss.hp / boss.hpMax;
+            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(boss.x - 1, boss.y - 15, boss.w + 2, 10);
+            ctx.fillStyle = pct > 0.5 ? '#44FF44' : pct > 0.25 ? '#FFAA00' : '#FF3333';
+            ctx.fillRect(boss.x, boss.y - 14, boss.w * pct, 8);
+            ctx.strokeStyle = '#FFF'; ctx.lineWidth = 1; ctx.strokeRect(boss.x, boss.y - 14, boss.w, 8);
+            ctx.fillStyle = '#FFF'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+            ctx.fillText(boss.hp + '/' + boss.hpMax, boss.x + boss.w / 2, boss.y - 18);
+        }
+
+        // --- GAME LOOP ---
+        function atualizar(timestamp) {
+            if (gameOver) return;
+            if (timestampInicio === 0) timestampInicio = timestamp;
+            tempoDeJogo = (timestamp - timestampInicio) / 1000;
+
+            spawnMonstro(timestamp);
+            verificarSpawnBoss();
+            atualizarEfeitos();
+
+            // Boss aviso timer
+            if (bossAvisoAtivo) { bossAvisoTimer--; if (bossAvisoTimer <= 0) { bossAvisoAtivo = false; enviarEstado(); } }
+
+            const chao = canvas.height - 30;
+            for (let i = monstros.length - 1; i >= 0; i--) {
+                const m = monstros[i]; if (!m.ativo) continue;
+                m.y += m.v;
+                if (m.y + m.h >= chao) {
+                    m.ativo = false; vidas--;
+                    screenShake.i = 8; screenShake.d = 12;
+                    flashDano.alpha = 0.6;
+                    criarTextoFlutuante(m.x + m.w / 2, chao - 20, '-1 ❤️', '#FF4444');
+                    somDano();
+                    if (navigator.vibrate) navigator.vibrate(100);
+                    if (vidas <= 0) perdeuJogo();
+                }
+            }
+
+            if (boss && boss.ativo) {
+                boss.y += boss.v;
+                if (boss.flash > 0) boss.flash--;
+                if (boss.y + boss.h >= chao) {
+                    boss.ativo = false; boss = null; vidas -= 2;
+                    screenShake.i = 15; screenShake.d = 20; flashDano.alpha = 0.6;
+                    criarTextoFlutuante(canvas.width / 2, chao - 30, '-2 ❤️❤️', '#FF0000');
+                    somDano();
+                    if (vidas <= 0) perdeuJogo();
+                }
+            }
+
+            monstros = monstros.filter(m => m.ativo);
+            enviarEstado(); // Send state to Swift every frame
+        }
+
+        function gameLoop(timestamp) {
+            atualizar(timestamp);
+
+            ctx.save();
+            ctx.translate(screenShake.ox, screenShake.oy);
+
+            desenharFundo();
+            desenharArvore();
+            for (const m of monstros) if (m.ativo) desenharMonstro(m);
+            desenharBoss();
+            desenharEfeitos();
+
+            ctx.restore();
+
+            if (!gameOver) requestAnimationFrame(gameLoop);
+        }
+
+        function perdeuJogo() {
+            vidas = 0; gameOver = true;
+            if (dracmas > highScore) {
+                highScore = dracmas;
+                try { localStorage.setItem('pinheiro_highscore', highScore); } catch (e) { }
+            }
+            somGameOver();
+            enviarEstado();
+        }
+
+        // --- Callable from Swift ---
+        function reiniciarJogo() {
+            dracmas = 0; vidas = VIDAS_INICIAIS; monstros = [];
+            gameOver = false; nivelDificuldade = 0; spawnInterval = 1200;
+            velocidadeQueda = 2; ultimoSpawn = 0;
+            monstrosDestruidos = 0; bossesDestruidos = 0;
+            tempoDeJogo = 0; timestampInicio = 0;
+            textosFlutuantes = []; particulas = [];
+            screenShake = { i: 0, d: 0, ox: 0, oy: 0 }; flashDano = { alpha: 0 };
+            boss = null; proximoBossDracmas = BOSS_DRACMAS_INTERVALO;
+            bossAvisoAtivo = false; bossAvisoTimer = 0;
+            enviarEstado();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- INPUT ---
+        function verificarToque(x, y) {
+            if (gameOver) return;
+
+            // Boss
+            if (boss && boss.ativo) {
+                if (x >= boss.x - HITBOX_EXTRA && x <= boss.x + boss.w + HITBOX_EXTRA &&
+                    y >= boss.y - HITBOX_EXTRA && y <= boss.y + boss.h + HITBOX_EXTRA) {
+                    boss.hp--; boss.flash = 8;
+                    criarExplosao(boss.x + boss.w / 2, boss.y + boss.h / 2, '#FF8800');
+                    criarTextoFlutuante(boss.x + boss.w / 2, boss.y + boss.h / 2 - 20, 'HIT!', '#FF8800');
+                    somBossHit();
+                    if (navigator.vibrate) navigator.vibrate(50);
+                    if (boss.hp <= 0) {
+                        boss.ativo = false; dracmas += BOSS_PONTOS;
+                        bossesDestruidos++; monstrosDestruidos++;
+                        atualizarDificuldade();
+                        const bcx = boss.x + boss.w / 2, bcy = boss.y + boss.h / 2;
+                        criarTextoFlutuante(bcx, bcy - 30, '+' + BOSS_PONTOS + ' 🌟', '#FFD700');
+                        for (let e = 0; e < 5; e++) {
+                            criarExplosao(bcx + (Math.random() - 0.5) * 40, bcy + (Math.random() - 0.5) * 40, '#FF4400');
+                            criarExplosao(bcx + (Math.random() - 0.5) * 40, bcy + (Math.random() - 0.5) * 40, '#FFDD00');
+                        }
+                        somBossDerrotado(); screenShake.i = 10; screenShake.d = 15;
+                        if (navigator.vibrate) navigator.vibrate(100);
+                        boss = null;
+                    }
+                    return;
+                }
+            }
+
+            // Monstros
+            for (let i = monstros.length - 1; i >= 0; i--) {
+                const m = monstros[i]; if (!m.ativo) continue;
+                if (x >= m.x - HITBOX_EXTRA && x <= m.x + m.w + HITBOX_EXTRA &&
+                    y >= m.y - HITBOX_EXTRA && y <= m.y + m.h + HITBOX_EXTRA) {
+                    m.ativo = false; dracmas += PONTOS_POR_MONSTRO; monstrosDestruidos++;
+                    atualizarDificuldade();
+                    const mx = m.x + m.w / 2, my = m.y + m.h / 2;
+                    criarTextoFlutuante(mx, my - 10, '+10', '#FFD700');
+                    criarExplosao(mx, my, '#FF6644');
+                    criarExplosao(mx, my, '#FFDD44');
+                    criarExplosao(mx, my, '#CC44FF');
+                    somEspada(); somMoeda();
+                    if (navigator.vibrate) navigator.vibrate(30);
+                    break;
+                }
+            }
+        }
+
+        // --- EVENTS ---
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); desbloquearAudio();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                const r = canvas.getBoundingClientRect();
+                verificarToque(t.clientX - r.left, t.clientY - r.top);
+            }
+        }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+        canvas.addEventListener('touchend', (e) => e.preventDefault(), { passive: false });
+        canvas.addEventListener('click', (e) => {
+            desbloquearAudio();
+            const r = canvas.getBoundingClientRect();
+            verificarToque(e.clientX - r.left, e.clientY - r.top);
+        });
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // --- START ---
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+
+</html>
