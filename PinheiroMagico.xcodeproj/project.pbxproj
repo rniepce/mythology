@@ -279,6 +279,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V8XBR58473;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PinheiroMagico/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Pinheiro Mágico";
@@ -306,6 +307,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V8XBR58473;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PinheiroMagico/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Pinheiro Mágico";
@@ -348,7 +350,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
 	};
 	rootObject = A00001 /* Project object */;
 }
