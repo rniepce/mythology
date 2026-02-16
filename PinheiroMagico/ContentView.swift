@@ -52,7 +52,7 @@ struct ContentView: View {
             .foregroundStyle(.yellow)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .glassEffect(.regular.interactive, in: .capsule)
+            .glassEffect(.regular.interactive(), in: .capsule)
 
             // Level
             Text("NÍVEL \(gameState.nivel)")
@@ -69,7 +69,7 @@ struct ContentView: View {
                 .font(.system(size: 15))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .glassEffect(.regular.interactive, in: .capsule)
+                .glassEffect(.regular.interactive(), in: .capsule)
         }
         .padding(.horizontal, 16)
     }
